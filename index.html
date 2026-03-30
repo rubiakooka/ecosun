@@ -1140,13 +1140,53 @@ function saveVendorToSupabase(name, data) {
   });
 }
 
-// Refresh button for manual sync
+// Manual sync + auto-poll every 15 seconds
 function manualSync() {
   syncFromSupabase().then(() => {
     if (currentJob) renderJobPanel(currentJob);
     renderAdminPanel();
     buildTabs();
   });
+}
+
+let _pollInterval = null;
+function startAutoSync() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(async () => {
+    // Silently fetch latest data
+    try {
+      const tasks = await sbGet('task_states', 'select=*');
+      const gi    = await sbGet('global_issues', 'select=*&order=created_at.desc');
+      const vc    = await sbGet('vendor_contacts', 'select=*');
+
+      let changed = false;
+
+      if (Array.isArray(tasks)) {
+        const newCache = {};
+        tasks.forEach(t => { newCache[t.id] = { completedDate: t.completed_date, issue: t.issue||'', note: t.note||'', vendorOverride: t.vendor_override||'' }; });
+        if (JSON.stringify(newCache) !== JSON.stringify(_taskCache)) { _taskCache = newCache; changed = true; }
+      }
+
+      if (Array.isArray(gi)) {
+        const newGi = gi.map(i => ({ id: i.id, title: i.title, description: i.description||'', vendor: i.vendor||'', affectedJobs: i.affected_jobs||[], affectedPhases: i.affected_phases||[], date: i.date, resolved: i.resolved, resolvedDate: i.resolved_date }));
+        if (JSON.stringify(newGi) !== JSON.stringify(_giCache)) { _giCache = newGi; changed = true; }
+      }
+
+      if (Array.isArray(vc)) {
+        const newVc = { ...VENDOR_SEED };
+        vc.forEach(v => { newVc[v.name] = { contact: v.contact||'', phone: v.phone||'', cell: v.cell||'', email: v.email||'', division: v.division||'' }; });
+        if (JSON.stringify(newVc) !== JSON.stringify(_vcCache)) { _vcCache = newVc; changed = true; }
+      }
+
+      if (changed) {
+        // Re-render current view quietly
+        if (currentJob) renderJobPanel(currentJob);
+        else renderAdminPanel();
+        buildTabs();
+        showSyncStatus('↻ Updated', 1500);
+      }
+    } catch(e) {}
+  }, 15000); // every 15 seconds
 }
 
 
@@ -1205,10 +1245,11 @@ function init() {
   applyTheme();
   buildTabs(); // build with empty data first
   showPanel('admin');
-  // Load from Supabase then re-render
+  // Load from Supabase then re-render + start auto-polling
   syncFromSupabase().then(() => {
     buildTabs();
     renderAdminPanel();
+    startAutoSync();
   });
 }
 
@@ -1230,7 +1271,16 @@ function buildTabs() {
   syncBtn.className = 'tab';
   syncBtn.title = 'Sync with database';
   syncBtn.style.cssText = 'font-size:12px;color:var(--ok)';
-  syncBtn.onclick = () => { syncBtn.textContent = '⟳'; manualSync(); };
+  syncBtn.onclick = () => { 
+    syncBtn.textContent = '⟳';
+    syncFromSupabase().then(() => {
+      if (currentJob) renderJobPanel(currentJob);
+      else renderAdminPanel();
+      buildTabs();
+      const now = new Date();
+      syncBtn.textContent = `↻ ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+    });
+  };
   syncBtn.textContent = '⟳ Sync';
   nav.appendChild(syncBtn);
 
